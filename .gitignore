@@ -1,0 +1,43 @@
+# Node modules
+node_modules/
+
+# Build output (keep main.js for distribution)
+# main.js is needed for the plugin to work
+
+# Development files
+*.log
+*.tmp
+.DS_Store
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test files
+test-*.js
+debug-*.js
+test-output.md
+
+# Environment files
+.env
+.env.local
+
+# TypeScript cache
+*.tsbuildinfo
+
+# npm debug logs
+npm-debug.log*
+
+# OS generated files
+Thumbs.db
+Desktop.ini
+
+# Temporary files
+*.temp
+*.cache
+
+# Personal notes or drafts
+drafts/
+personal-notes/
