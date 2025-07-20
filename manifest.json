@@ -1,9 +1,9 @@
 {
-  "id": "figma-obsidian-sync",
+  "id": "figma-comments-sync",
   "name": "Figma Comments Sync",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minAppVersion": "0.15.0",
-  "description": "Sync Figma comments to your Obsidian vault as markdown documents",
+  "description": "Sync Figma comments to your vault as markdown documents",
   "author": "katomaru",
   "authorUrl": "https://github.com/katomaru",
   "isDesktopOnly": false
