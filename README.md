@@ -20,7 +20,7 @@ Sync your Figma comments directly into your Obsidian vault as markdown documents
 4. Click Install and then Enable
 
 ### Manual Installation
-1. Download the latest release from the [Releases](https://github.com/[your-username]/figma-obsidian-sync-plugin/releases) page
+1. Download the latest release from the [Releases](https://github.com/katomaru/figma-obsidian-sync-plugin/releases) page
 2. Extract the files to your vault's `.obsidian/plugins/figma-obsidian-sync/` folder
 3. Reload Obsidian
 4. Enable the plugin in Settings → Community Plugins
@@ -116,7 +116,7 @@ This plugin is open source. Contributions are welcome!
 ### Building from Source
 ```bash
 # Clone the repository
-git clone https://github.com/[your-username]/figma-obsidian-sync-plugin.git
+git clone https://github.com/katomaru/figma-obsidian-sync-plugin.git
 
 # Install dependencies
 npm install
@@ -130,9 +130,9 @@ npm run dev
 
 ## Support
 
-- 🐛 Report bugs on [GitHub Issues](https://github.com/[your-username]/figma-obsidian-sync-plugin/issues)
-- 💡 Request features in [Discussions](https://github.com/[your-username]/figma-obsidian-sync-plugin/discussions)
-- 📖 Read the [Documentation](https://github.com/[your-username]/figma-obsidian-sync-plugin/wiki)
+- 🐛 Report bugs on [GitHub Issues](https://github.com/katomaru/figma-obsidian-sync-plugin/issues)
+- 💡 Request features in [Discussions](https://github.com/katomaru/figma-obsidian-sync-plugin/discussions)
+- 📖 Read the [Documentation](https://github.com/katomaru/figma-obsidian-sync-plugin/wiki)
 
 ## License
 

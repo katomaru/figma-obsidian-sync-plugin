@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "minAppVersion": "0.15.0",
   "description": "Sync Figma comments to your Obsidian vault as markdown documents",
-  "author": "Your Name",
-  "authorUrl": "https://github.com/your-username",
+  "author": "katomaru",
+  "authorUrl": "https://github.com/katomaru",
   "isDesktopOnly": false
 }
