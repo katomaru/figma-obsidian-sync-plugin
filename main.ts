@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting, Notice, TFile, TFolder, normalizePath, Modal } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, Notice, TFile, TFolder, normalizePath, Modal, requestUrl } from 'obsidian';
 
 interface FigmaComment {
   id: string;
@@ -35,10 +35,15 @@ interface FigmaObsidianSyncSettings {
   syncFolder: string;
   syncInterval: number;
   figmaFiles: FigmaFile[];
-  lastSync: string;
   encryptedToken?: string;
   tokenVisible?: boolean;
   fetchFrameInfo?: boolean;
+  deleteToTrash?: boolean;
+}
+
+// Separate interface for temporary/cache data that shouldn't be synced
+interface FigmaObsidianSyncRuntimeData {
+  lastSync: string;
   frameInfoCache?: Record<string, FrameCache>;
 }
 
@@ -61,9 +66,13 @@ const DEFAULT_SETTINGS: FigmaObsidianSyncSettings = {
   syncFolder: 'Figma Comments',
   syncInterval: 300000, // 5 minutes in milliseconds
   figmaFiles: [],
-  lastSync: '',
   tokenVisible: false,
   fetchFrameInfo: false,
+  deleteToTrash: true
+};
+
+const DEFAULT_RUNTIME_DATA: FigmaObsidianSyncRuntimeData = {
+  lastSync: '',
   frameInfoCache: {}
 };
 
@@ -197,7 +206,11 @@ class FolderMigrationManager {
     try {
       const oldFolder = this.app.vault.getAbstractFileByPath(oldPath);
       if (oldFolder instanceof TFolder && oldFolder.children.length === 0) {
-        await this.app.vault.delete(oldFolder);
+        if (this.plugin.settings.deleteToTrash) {
+          await this.app.fileManager.trashFile(oldFolder);
+        } else {
+          await this.app.vault.delete(oldFolder);
+        }
       }
     } catch {
       // Ignore if folder can't be deleted
@@ -294,18 +307,20 @@ class FrameInfoFetcher {
   private async fetchFileStructure(fileKey: string): Promise<any> {
     try {
       // Use geometry=paths to get bounding box information for coordinate-based detection
-      const response = await fetch(`https://api.figma.com/v1/files/${fileKey}?depth=3&geometry=paths`, {
+      const response = await requestUrl({
+        url: `https://api.figma.com/v1/files/${fileKey}?depth=3&geometry=paths`,
+        method: 'GET',
         headers: {
           'X-Figma-Token': this.token
         }
       });
       
-      if (!response.ok) {
-        console.error('Failed to fetch file structure:', response.statusText);
+      if (response.status !== 200) {
+        console.error('Failed to fetch file structure:', response.status);
         return null;
       }
       
-      const data = await response.json();
+      const data = response.json;
       
       // Cache the file structure
       if (!this.cache[fileKey]) {
@@ -483,6 +498,7 @@ class FrameInfoFetcher {
 
 export default class FigmaObsidianSyncPlugin extends Plugin {
   settings: FigmaObsidianSyncSettings;
+  runtimeData: FigmaObsidianSyncRuntimeData;
   syncIntervalId: number | null = null;
   frameInfoFetcher: FrameInfoFetcher | null = null;
 
@@ -493,7 +509,7 @@ export default class FigmaObsidianSyncPlugin extends Plugin {
     if (this.settings.fetchFrameInfo && this.settings.figmaToken) {
       this.frameInfoFetcher = new FrameInfoFetcher(
         this.settings.figmaToken,
-        this.settings.frameInfoCache || {}
+        this.runtimeData.frameInfoCache || {}
       );
     }
 
@@ -526,7 +542,20 @@ export default class FigmaObsidianSyncPlugin extends Plugin {
 
   async loadSettings() {
     const loadedData = await this.loadData();
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
+    
+    // Separate settings and runtime data
+    this.settings = Object.assign({}, DEFAULT_SETTINGS);
+    this.runtimeData = Object.assign({}, DEFAULT_RUNTIME_DATA);
+    
+    if (loadedData) {
+      // Load persistent settings (excluding runtime data)
+      const { lastSync, frameInfoCache, ...persistentSettings } = loadedData;
+      Object.assign(this.settings, persistentSettings);
+      
+      // Load runtime data from memory only (not persisted)
+      if (lastSync) this.runtimeData.lastSync = lastSync;
+      if (frameInfoCache) this.runtimeData.frameInfoCache = frameInfoCache;
+    }
     
     // Decrypt token if encrypted
     if (this.settings.encryptedToken && !this.settings.figmaToken) {
@@ -540,23 +569,28 @@ export default class FigmaObsidianSyncPlugin extends Plugin {
       if (!this.frameInfoFetcher) {
         this.frameInfoFetcher = new FrameInfoFetcher(
           this.settings.figmaToken,
-          this.settings.frameInfoCache || {}
+          this.runtimeData.frameInfoCache || {}
         );
       }
     } else {
       this.frameInfoFetcher = null;
     }
     
+    // Save only persistent settings (not runtime data like lastSync, frameInfoCache)
+    const settingsToSave: any = { ...this.settings };
+    
     // Encrypt token before saving
     if (this.settings.figmaToken) {
-      this.settings.encryptedToken = TokenManager.encrypt(this.settings.figmaToken);
+      settingsToSave.encryptedToken = TokenManager.encrypt(this.settings.figmaToken);
       // Don't save plain token to disk
-      const settingsToSave: any = { ...this.settings };
       delete settingsToSave.figmaToken;
-      await this.saveData(settingsToSave);
-    } else {
-      await this.saveData(this.settings);
     }
+    
+    // Never save runtime data to prevent Git conflicts
+    delete settingsToSave.lastSync;
+    delete settingsToSave.frameInfoCache;
+    
+    await this.saveData(settingsToSave);
   }
 
   startAutoSync() {
@@ -588,7 +622,7 @@ export default class FigmaObsidianSyncPlugin extends Plugin {
 
     // Clear frame info cache if requested (for manual sync)
     if (clearCache && this.settings.fetchFrameInfo) {
-      this.settings.frameInfoCache = {};
+      this.runtimeData.frameInfoCache = {};
       if (this.frameInfoFetcher) {
         this.frameInfoFetcher.clearCache();
       }
@@ -608,8 +642,8 @@ export default class FigmaObsidianSyncPlugin extends Plugin {
       }
     }
 
-    this.settings.lastSync = new Date().toISOString();
-    await this.saveSettings();
+    this.runtimeData.lastSync = new Date().toISOString();
+    // Note: we don't save runtime data to prevent Git conflicts
     new Notice('Figma sync completed');
   }
 
@@ -619,17 +653,19 @@ export default class FigmaObsidianSyncPlugin extends Plugin {
   }
 
   async fetchComments(fileKey: string): Promise<FigmaComment[]> {
-    const response = await fetch(`https://api.figma.com/v1/files/${fileKey}/comments`, {
+    const response = await requestUrl({
+      url: `https://api.figma.com/v1/files/${fileKey}/comments`,
+      method: 'GET',
       headers: {
         'X-Figma-Token': this.settings.figmaToken
       }
     });
 
-    if (!response.ok) {
-      throw new Error(`Figma API error: ${response.statusText}`);
+    if (response.status !== 200) {
+      throw new Error(`Figma API error: ${response.status}`);
     }
 
-    const data: FigmaCommentsResponse = await response.json();
+    const data: FigmaCommentsResponse = response.json;
     return data.comments;
   }
 
@@ -859,6 +895,23 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
             new Notice('Frame information disabled');
           }
         }));
+
+    // Delete to Trash Toggle
+    new Setting(containerEl)
+      .setName('Delete old folders to trash')
+      .setDesc('When enabled, empty folders are moved to trash instead of being permanently deleted. This follows your Obsidian trash settings and allows for recovery.')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.deleteToTrash ?? true)
+        .onChange(async (value) => {
+          this.plugin.settings.deleteToTrash = value;
+          await this.plugin.saveSettings();
+          
+          if (value) {
+            new Notice('Empty folders will be moved to trash');
+          } else {
+            new Notice('Empty folders will be permanently deleted');
+          }
+        }));
   }
 
   private addSecuritySection(containerEl: HTMLElement): void {
@@ -1050,9 +1103,9 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
     containerEl.createEl('h3', { text: '🔄 Actions' });
     
     // Last Sync Info
-    if (this.plugin.settings.lastSync) {
+    if (this.plugin.runtimeData.lastSync) {
       containerEl.createEl('p', {
-        text: `Last sync: ${new Date(this.plugin.settings.lastSync).toLocaleString()}`,
+        text: `Last sync: ${new Date(this.plugin.runtimeData.lastSync).toLocaleString()}`,
         cls: 'setting-item-description'
       });
     }
@@ -1076,11 +1129,11 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
         .addButton(button => button
           .setButtonText('Clear Cache')
           .onClick(() => {
-            this.plugin.settings.frameInfoCache = {};
+            this.plugin.runtimeData.frameInfoCache = {};
             if (this.plugin.frameInfoFetcher) {
               this.plugin.frameInfoFetcher.clearCache();
             }
-            this.plugin.saveSettings();
+            // Note: no saveSettings() call here since runtime data isn't persisted
             new Notice('Frame info cache cleared');
           }));
     }
@@ -1093,17 +1146,19 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
     }
     
     try {
-      const response = await fetch('https://api.figma.com/v1/me', {
+      const response = await requestUrl({
+        url: 'https://api.figma.com/v1/me',
+        method: 'GET',
         headers: {
           'X-Figma-Token': this.plugin.settings.figmaToken
         }
       });
       
-      if (response.ok) {
-        const user = await response.json();
+      if (response.status === 200) {
+        const user = response.json;
         new Notice(`✅ Connected successfully as ${user.email}`);
       } else {
-        new Notice(`❌ Connection failed: ${response.statusText}`);
+        new Notice(`❌ Connection failed: ${response.status}`);
       }
     } catch (error) {
       new Notice(`❌ Connection failed: ${error.message}`);
