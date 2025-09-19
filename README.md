@@ -49,7 +49,7 @@ Sync your Figma comments directly into your Obsidian vault as markdown documents
 Once configured, the plugin will:
 - Automatically sync comments at your specified interval
 - Create a folder structure: `Figma Comments/[File Name]/comments/`
-- Generate markdown files for each comment thread
+- Generate Markdown files for each comment thread
 - Update existing comments when changes are detected
 
 ### Folder Structure
@@ -71,7 +71,7 @@ You can manually trigger a sync using:
 ## Features in Detail
 
 ### Comment Format
-Each comment thread is saved as a markdown file with:
+Each comment thread is saved as a Markdown file with:
 - Thread metadata (participants, timestamps)
 - Frame/component information (if enabled)
 - All comments in chronological order

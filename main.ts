@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting, Notice, TFile, TFolder, normalizePath, Modal, requestUrl } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, Notice, TFile, TFolder, normalizePath, Modal, requestUrl, ButtonComponent } from 'obsidian';
 
 interface FigmaComment {
   id: string;
@@ -157,7 +157,7 @@ class FolderMigrationManager {
   private async showMigrationDialog(files: string[], newPath: string): Promise<boolean> {
     return new Promise((resolve) => {
       const modal = new Modal(this.app);
-      modal.titleEl.textContent = 'Sync Folder Migration';
+      modal.titleEl.textContent = 'Sync folder migration';
       
       const content = modal.contentEl;
       content.createEl('p', { text: `Found ${files.length} existing sync files. Do you want to move them to the new location?` });
@@ -177,11 +177,13 @@ class FolderMigrationManager {
         resolve(false);
       };
       
-      const moveBtn = buttonContainer.createEl('button', { text: 'Move Files', cls: 'mod-cta' });
-      moveBtn.onclick = () => {
-        modal.close();
-        resolve(true);
-      };
+      new ButtonComponent(buttonContainer)
+        .setButtonText('Move files')
+        .setCta()
+        .onClick(() => {
+          modal.close();
+          resolve(true);
+        });
       
       modal.open();
     });
@@ -596,9 +598,11 @@ export default class FigmaObsidianSyncPlugin extends Plugin {
   startAutoSync() {
     this.stopAutoSync();
     if (this.settings.syncInterval > 0) {
-      this.syncIntervalId = window.setInterval(() => {
-        this.syncAllFiles();
-      }, this.settings.syncInterval);
+      this.syncIntervalId = this.registerInterval(
+        window.setInterval(() => {
+          this.syncAllFiles();
+        }, this.settings.syncInterval)
+      );
     }
   }
 
@@ -771,13 +775,9 @@ open_comments: ${comments.filter(c => !c.resolved_at).length}
     for (const child of folder.children) {
       if (child instanceof TFile && child.extension === 'md') {
         try {
-          const content = await this.app.vault.read(child);
-          const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
-          if (frontmatterMatch) {
-            const frontmatter = frontmatterMatch[1];
-            if (frontmatter.includes(`figma_file_key: ${fileKey}`)) {
-              return child.path;
-            }
+          const cache = this.app.metadataCache.getFileCache(child);
+          if (cache?.frontmatter?.figma_file_key === fileKey) {
+            return child.path;
           }
         } catch (error) {
           // Skip files that can't be read
@@ -788,6 +788,96 @@ open_comments: ${comments.filter(c => !c.resolved_at).length}
     return null;
   }
 
+}
+
+class SecurityModal extends Modal {
+  plugin: FigmaObsidianSyncPlugin;
+  
+  constructor(app: App, plugin: FigmaObsidianSyncPlugin) {
+    super(app);
+    this.plugin = plugin;
+  }
+  
+  onOpen() {
+    this.titleEl.textContent = '🔒 Security';
+    this.render();
+  }
+  
+  render() {
+    const { contentEl } = this;
+    contentEl.empty();
+    
+    contentEl.createEl('p', { 
+      text: 'Your Figma access token is encrypted and stored securely.',
+      cls: 'setting-item-description'
+    });
+    
+    // Token field with show/hide
+    const tokenVisible = this.plugin.settings.tokenVisible || false;
+    const tokenValue = this.plugin.settings.figmaToken || '';
+    const displayValue = tokenVisible ? tokenValue : '•'.repeat(Math.min(tokenValue.length, 20));
+    
+    new Setting(contentEl)
+      .setName('Figma personal access token')
+      .setDesc('Get your token from https://www.figma.com/developers/api#access-tokens')
+      .addText(text => {
+        text.setPlaceholder('Enter your token')
+          .setValue(displayValue)
+          .onChange(async (value) => {
+            if (tokenVisible || value !== displayValue) {
+              this.plugin.settings.figmaToken = value;
+              await this.plugin.saveSettings();
+            }
+          });
+        
+        // Style as password field when hidden
+        if (!tokenVisible) {
+          text.inputEl.type = 'password';
+        }
+      });
+
+    // Add buttons in a separate Setting below the token input
+    new Setting(contentEl)
+      .addButton(button => button
+        .setButtonText(tokenVisible ? 'Hide' : 'Show')
+        .onClick(async () => {
+          this.plugin.settings.tokenVisible = !tokenVisible;
+          await this.plugin.saveSettings();
+          this.render(); // Re-render instead of reopening
+        }))
+      .addButton(button => button
+        .setButtonText('Test connection')
+        .setCta()
+        .onClick(async () => {
+          await this.testConnection();
+        }));
+  }
+  
+  private async testConnection(): Promise<void> {
+    if (!this.plugin.settings.figmaToken) {
+      new Notice('Please enter a Figma token first');
+      return;
+    }
+    
+    try {
+      const response = await requestUrl({
+        url: 'https://api.figma.com/v1/me',
+        method: 'GET',
+        headers: {
+          'X-Figma-Token': this.plugin.settings.figmaToken
+        }
+      });
+      
+      if (response.status === 200) {
+        const user = response.json;
+        new Notice(`✅ Connected successfully as ${user.email}`);
+      } else {
+        new Notice(`❌ Connection failed: ${response.status}`);
+      }
+    } catch (error) {
+      new Notice(`❌ Connection failed: ${error.message}`);
+    }
+  }
 }
 
 class FigmaObsidianSyncSettingTab extends PluginSettingTab {
@@ -805,7 +895,7 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl('h2', { text: 'Figma Comments Sync Settings' });
+    // Remove top-level heading per Obsidian guidelines
 
     // Sync file names with actual files before displaying
     await this.syncFileNamesWithActualFiles();
@@ -824,11 +914,11 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
   }
   
   private addGeneralSettings(containerEl: HTMLElement): void {
-    containerEl.createEl('h3', { text: '⚙️ General Settings' });
+    new Setting(containerEl).setName('⚙️ General').setHeading();
     
     // Sync Folder with migration
     new Setting(containerEl)
-      .setName('Sync Folder')
+      .setName('Sync folder')
       .setDesc('Parent folder for all synced comments. Example: "Figma Comments" → saves as "Figma Comments/FileName_comments.md"')
       .addText(text => {
         const oldPath = this.plugin.settings.syncFolder;
@@ -867,7 +957,7 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
 
     // Sync Interval
     new Setting(containerEl)
-      .setName('Auto-sync Interval (minutes)')
+      .setName('Auto-sync interval (minutes)')
       .setDesc('How often to automatically sync comments (0 to disable)')
       .addText(text => text
         .setPlaceholder('5')
@@ -881,7 +971,7 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
     
     // Frame Info Toggle
     new Setting(containerEl)
-      .setName('Fetch Frame Information')
+      .setName('Fetch frame information')
       .setDesc('Retrieve and display which frame/component each comment belongs to (uses additional API calls). Note: Frame information is cached for 24 hours. If Figma frame names are not reflecting after changes, use "Clear Cache" button below or perform manual sync.')
       .addToggle(toggle => toggle
         .setValue(this.plugin.settings.fetchFrameInfo || false)
@@ -898,8 +988,8 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
 
     // Delete to Trash Toggle
     new Setting(containerEl)
-      .setName('Delete old folders to trash')
-      .setDesc('When enabled, empty folders are moved to trash instead of being permanently deleted. This follows your Obsidian trash settings and allows for recovery.')
+      .setName('Move empty folders to trash')
+      .setDesc('Move empty folders to trash when changing sync locations, following your Obsidian trash settings.')
       .addToggle(toggle => toggle
         .setValue(this.plugin.settings.deleteToTrash ?? true)
         .onChange(async (value) => {
@@ -915,12 +1005,12 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
   }
 
   private addSecuritySection(containerEl: HTMLElement): void {
-    containerEl.createEl('h3', { text: this.securityTitle });
+    new Setting(containerEl).setName('🔒 Security').setHeading();
     
     // Add security settings with icon button
     new Setting(containerEl)
-      .setName('Figma Access Token')
-      .setDesc('Configure your Figma Personal Access Token securely')
+      .setName('Figma access token')
+      .setDesc('Configure your Figma personal access token securely')
       .addButton(button => button
         .setIcon('settings')
         .setTooltip('Open security settings')
@@ -930,68 +1020,12 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
   }
 
   private openSecurityModal(): void {
-    const modal = new Modal(this.app);
-    modal.titleEl.textContent = this.securityTitle;
-    
-    const content = modal.contentEl;
-    
-    // Add security settings inside the modal
-    this.addSecuritySettingsToModal(content, modal);
-    
-    modal.open();
+    new SecurityModal(this.app, this.plugin).open();
   }
 
-  private addSecuritySettingsToModal(containerEl: HTMLElement, modal: Modal): void {
-    containerEl.createEl('p', { 
-      text: 'Your Figma access token is encrypted and stored securely.',
-      cls: 'setting-item-description'
-    });
-    
-    // Token field with show/hide
-    const tokenVisible = this.plugin.settings.tokenVisible || false;
-    const tokenValue = this.plugin.settings.figmaToken || '';
-    const displayValue = tokenVisible ? tokenValue : '•'.repeat(Math.min(tokenValue.length, 20));
-    
-    new Setting(containerEl)
-      .setName('Figma Personal Access Token')
-      .setDesc('Get your token from https://www.figma.com/developers/api#access-tokens')
-      .addText(text => {
-        text.setPlaceholder('Enter your token')
-          .setValue(displayValue)
-          .onChange(async (value) => {
-            if (tokenVisible || value !== displayValue) {
-              this.plugin.settings.figmaToken = value;
-              await this.plugin.saveSettings();
-            }
-          });
-        
-        // Style as password field when hidden
-        if (!tokenVisible) {
-          text.inputEl.type = 'password';
-        }
-      });
-
-    // Add buttons in a separate Setting below the token input
-    new Setting(containerEl)
-      .addButton(button => button
-        .setButtonText(tokenVisible ? 'Hide' : 'Show')
-        .onClick(async () => {
-          this.plugin.settings.tokenVisible = !tokenVisible;
-          await this.plugin.saveSettings();
-          // Close and reopen the modal with updated state
-          modal.close();
-          this.openSecurityModal();
-        }))
-      .addButton(button => button
-        .setButtonText('Test Connection')
-        .setCta()
-        .onClick(async () => {
-          await this.testConnection();
-        }));
-  }
   
   private addFileManagementSettings(containerEl: HTMLElement): void {
-    containerEl.createEl('h3', { text: '📁 File Management' });
+    new Setting(containerEl).setName('📁 File management').setHeading();
     containerEl.createEl('p', { 
       text: 'Manage Figma files to sync comments from. Toggle files on/off to control syncing.',
       cls: 'setting-item-description' 
@@ -1043,24 +1077,24 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
   }
   
   private addNewFileSection(containerEl: HTMLElement): void {
-    containerEl.createEl('h4', { text: '➕ Add New File' });
+    containerEl.createEl('h4', { text: '➕ Add new file' });
     
     let newFileName = '';
     let newFileKey = '';
 
     // Single setting with both inputs side by side
     const setting = new Setting(containerEl)
-      .setName('Add Figma File')
+      .setName('Add Figma file')
       .setDesc('Enter a friendly name and the file key from Figma URL');
     
     // File name input (left side)
     setting.addText(text => text
-      .setPlaceholder('File Name')
+      .setPlaceholder('File name')
       .onChange(value => newFileName = value));
     
     // File key input (right side)
     setting.addText(text => text
-      .setPlaceholder('File Key (e.g., ABC123XYZ)')
+      .setPlaceholder('File key (e.g., ABC123XYZ)')
       .onChange(value => newFileKey = value));
     
     // Add button
@@ -1100,7 +1134,7 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
   }
   
   private addActionsSection(containerEl: HTMLElement): void {
-    containerEl.createEl('h3', { text: '🔄 Actions' });
+    new Setting(containerEl).setName('🔄 Actions').setHeading();
     
     // Last Sync Info
     if (this.plugin.runtimeData.lastSync) {
@@ -1112,10 +1146,10 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
 
     // Manual Sync Button
     new Setting(containerEl)
-      .setName('Manual Sync')
+      .setName('Manual sync')
       .setDesc('Sync all enabled Figma files now')
       .addButton(button => button
-        .setButtonText('Sync Now')
+        .setButtonText('Sync now')
         .setCta()
         .onClick(() => {
           this.plugin.syncAllFiles(true); // Clear cache on manual sync
@@ -1124,10 +1158,10 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
     // Add cache management section
     if (this.plugin.settings.fetchFrameInfo) {
       new Setting(containerEl)
-        .setName('Clear Frame Info Cache')
+        .setName('Clear frame info cache')
         .setDesc('Clear cached frame information to fetch the latest data from Figma. Use this if frame names changed in Figma but are not reflecting in synced comments.')
         .addButton(button => button
-          .setButtonText('Clear Cache')
+          .setButtonText('Clear cache')
           .onClick(() => {
             this.plugin.runtimeData.frameInfoCache = {};
             if (this.plugin.frameInfoFetcher) {
@@ -1139,35 +1173,9 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
     }
   }
   
-  private async testConnection(): Promise<void> {
-    if (!this.plugin.settings.figmaToken) {
-      new Notice('Please enter a Figma token first');
-      return;
-    }
-    
-    try {
-      const response = await requestUrl({
-        url: 'https://api.figma.com/v1/me',
-        method: 'GET',
-        headers: {
-          'X-Figma-Token': this.plugin.settings.figmaToken
-        }
-      });
-      
-      if (response.status === 200) {
-        const user = response.json;
-        new Notice(`✅ Connected successfully as ${user.email}`);
-      } else {
-        new Notice(`❌ Connection failed: ${response.status}`);
-      }
-    } catch (error) {
-      new Notice(`❌ Connection failed: ${error.message}`);
-    }
-  }
-  
   private editFileDialog(file: FigmaFile, index: number): void {
     const modal = new Modal(this.app);
-    modal.titleEl.textContent = 'Edit Figma File';
+    modal.titleEl.textContent = 'Edit Figma file';
     
     const content = modal.contentEl;
     
@@ -1175,13 +1183,13 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
     let editKey = file.key;
     
     new Setting(content)
-      .setName('File Name')
+      .setName('File name')
       .addText(text => text
         .setValue(file.name)
         .onChange(value => editName = value));
     
     new Setting(content)
-      .setName('File Key')
+      .setName('File key')
       .addText(text => text
         .setValue(file.key)
         .onChange(value => editKey = value));
@@ -1191,19 +1199,21 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
     const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
     cancelBtn.onclick = () => modal.close();
     
-    const saveBtn = buttonContainer.createEl('button', { text: 'Save', cls: 'mod-cta' });
-    saveBtn.onclick = async () => {
-      if (editName && editKey) {
-        this.plugin.settings.figmaFiles[index] = {
-          ...file,
-          name: editName,
-          key: editKey
-        };
-        await this.plugin.saveSettings();
-        modal.close();
-        this.display();
-      }
-    };
+    new ButtonComponent(buttonContainer)
+      .setButtonText('Save')
+      .setCta()
+      .onClick(async () => {
+        if (editName && editKey) {
+          this.plugin.settings.figmaFiles[index] = {
+            ...file,
+            name: editName,
+            key: editKey
+          };
+          await this.plugin.saveSettings();
+          modal.close();
+          this.display();
+        }
+      });
     
     modal.open();
   }

@@ -33,11 +33,13 @@ var DEFAULT_SETTINGS = {
   syncInterval: 3e5,
   // 5 minutes in milliseconds
   figmaFiles: [],
-  lastSync: "",
   tokenVisible: false,
   fetchFrameInfo: false,
-  frameInfoCache: {},
   deleteToTrash: true
+};
+var DEFAULT_RUNTIME_DATA = {
+  lastSync: "",
+  frameInfoCache: {}
 };
 var TokenManager = class {
   static encrypt(text) {
@@ -113,7 +115,7 @@ var FolderMigrationManager = class {
   async showMigrationDialog(files, newPath) {
     return new Promise((resolve) => {
       const modal = new import_obsidian.Modal(this.app);
-      modal.titleEl.textContent = "Sync Folder Migration";
+      modal.titleEl.textContent = "Sync folder migration";
       const content = modal.contentEl;
       content.createEl("p", { text: `Found ${files.length} existing sync files. Do you want to move them to the new location?` });
       const fileList = content.createEl("ul");
@@ -127,11 +129,10 @@ var FolderMigrationManager = class {
         modal.close();
         resolve(false);
       };
-      const moveBtn = buttonContainer.createEl("button", { text: "Move Files", cls: "mod-cta" });
-      moveBtn.onclick = () => {
+      new import_obsidian.ButtonComponent(buttonContainer).setButtonText("Move files").setCta().onClick(() => {
         modal.close();
         resolve(true);
-      };
+      });
       modal.open();
     });
   }
@@ -373,7 +374,7 @@ var FigmaObsidianSyncPlugin = class extends import_obsidian.Plugin {
     if (this.settings.fetchFrameInfo && this.settings.figmaToken) {
       this.frameInfoFetcher = new FrameInfoFetcher(
         this.settings.figmaToken,
-        this.settings.frameInfoCache || {}
+        this.runtimeData.frameInfoCache || {}
       );
     }
     this.addRibbonIcon("sync", "Sync Figma Comments", () => {
@@ -396,7 +397,16 @@ var FigmaObsidianSyncPlugin = class extends import_obsidian.Plugin {
   }
   async loadSettings() {
     const loadedData = await this.loadData();
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
+    this.settings = Object.assign({}, DEFAULT_SETTINGS);
+    this.runtimeData = Object.assign({}, DEFAULT_RUNTIME_DATA);
+    if (loadedData) {
+      const { lastSync, frameInfoCache, ...persistentSettings } = loadedData;
+      Object.assign(this.settings, persistentSettings);
+      if (lastSync)
+        this.runtimeData.lastSync = lastSync;
+      if (frameInfoCache)
+        this.runtimeData.frameInfoCache = frameInfoCache;
+    }
     if (this.settings.encryptedToken && !this.settings.figmaToken) {
       this.settings.figmaToken = TokenManager.decrypt(this.settings.encryptedToken);
     }
@@ -406,27 +416,29 @@ var FigmaObsidianSyncPlugin = class extends import_obsidian.Plugin {
       if (!this.frameInfoFetcher) {
         this.frameInfoFetcher = new FrameInfoFetcher(
           this.settings.figmaToken,
-          this.settings.frameInfoCache || {}
+          this.runtimeData.frameInfoCache || {}
         );
       }
     } else {
       this.frameInfoFetcher = null;
     }
+    const settingsToSave = { ...this.settings };
     if (this.settings.figmaToken) {
-      this.settings.encryptedToken = TokenManager.encrypt(this.settings.figmaToken);
-      const settingsToSave = { ...this.settings };
+      settingsToSave.encryptedToken = TokenManager.encrypt(this.settings.figmaToken);
       delete settingsToSave.figmaToken;
-      await this.saveData(settingsToSave);
-    } else {
-      await this.saveData(this.settings);
     }
+    delete settingsToSave.lastSync;
+    delete settingsToSave.frameInfoCache;
+    await this.saveData(settingsToSave);
   }
   startAutoSync() {
     this.stopAutoSync();
     if (this.settings.syncInterval > 0) {
-      this.syncIntervalId = window.setInterval(() => {
-        this.syncAllFiles();
-      }, this.settings.syncInterval);
+      this.syncIntervalId = this.registerInterval(
+        window.setInterval(() => {
+          this.syncAllFiles();
+        }, this.settings.syncInterval)
+      );
     }
   }
   stopAutoSync() {
@@ -445,7 +457,7 @@ var FigmaObsidianSyncPlugin = class extends import_obsidian.Plugin {
       return;
     }
     if (clearCache && this.settings.fetchFrameInfo) {
-      this.settings.frameInfoCache = {};
+      this.runtimeData.frameInfoCache = {};
       if (this.frameInfoFetcher) {
         this.frameInfoFetcher.clearCache();
       }
@@ -461,8 +473,7 @@ var FigmaObsidianSyncPlugin = class extends import_obsidian.Plugin {
         new import_obsidian.Notice(`Failed to sync ${file.name}: ${error.message}`);
       }
     }
-    this.settings.lastSync = new Date().toISOString();
-    await this.saveSettings();
+    this.runtimeData.lastSync = new Date().toISOString();
     new import_obsidian.Notice("Figma sync completed");
   }
   async syncFile(file) {
@@ -561,19 +572,16 @@ open_comments: ${comments.filter((c) => !c.resolved_at).length}
   }
   // Find existing file by figma_file_key in frontmatter (handles renamed files)
   async findExistingFileByKey(folderPath, fileKey) {
+    var _a;
     const folder = this.app.vault.getAbstractFileByPath(folderPath);
     if (!folder || !(folder instanceof import_obsidian.TFolder))
       return null;
     for (const child of folder.children) {
       if (child instanceof import_obsidian.TFile && child.extension === "md") {
         try {
-          const content = await this.app.vault.read(child);
-          const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
-          if (frontmatterMatch) {
-            const frontmatter = frontmatterMatch[1];
-            if (frontmatter.includes(`figma_file_key: ${fileKey}`)) {
-              return child.path;
-            }
+          const cache = this.app.metadataCache.getFileCache(child);
+          if (((_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a.figma_file_key) === fileKey) {
+            return child.path;
           }
         } catch (error) {
           continue;
@@ -581,6 +589,68 @@ open_comments: ${comments.filter((c) => !c.resolved_at).length}
       }
     }
     return null;
+  }
+};
+var SecurityModal = class extends import_obsidian.Modal {
+  constructor(app, plugin) {
+    super(app);
+    this.plugin = plugin;
+  }
+  onOpen() {
+    this.titleEl.textContent = "\u{1F512} Security";
+    this.render();
+  }
+  render() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("p", {
+      text: "Your Figma access token is encrypted and stored securely.",
+      cls: "setting-item-description"
+    });
+    const tokenVisible = this.plugin.settings.tokenVisible || false;
+    const tokenValue = this.plugin.settings.figmaToken || "";
+    const displayValue = tokenVisible ? tokenValue : "\u2022".repeat(Math.min(tokenValue.length, 20));
+    new import_obsidian.Setting(contentEl).setName("Figma personal access token").setDesc("Get your token from https://www.figma.com/developers/api#access-tokens").addText((text) => {
+      text.setPlaceholder("Enter your token").setValue(displayValue).onChange(async (value) => {
+        if (tokenVisible || value !== displayValue) {
+          this.plugin.settings.figmaToken = value;
+          await this.plugin.saveSettings();
+        }
+      });
+      if (!tokenVisible) {
+        text.inputEl.type = "password";
+      }
+    });
+    new import_obsidian.Setting(contentEl).addButton((button) => button.setButtonText(tokenVisible ? "Hide" : "Show").onClick(async () => {
+      this.plugin.settings.tokenVisible = !tokenVisible;
+      await this.plugin.saveSettings();
+      this.render();
+    })).addButton((button) => button.setButtonText("Test connection").setCta().onClick(async () => {
+      await this.testConnection();
+    }));
+  }
+  async testConnection() {
+    if (!this.plugin.settings.figmaToken) {
+      new import_obsidian.Notice("Please enter a Figma token first");
+      return;
+    }
+    try {
+      const response = await (0, import_obsidian.requestUrl)({
+        url: "https://api.figma.com/v1/me",
+        method: "GET",
+        headers: {
+          "X-Figma-Token": this.plugin.settings.figmaToken
+        }
+      });
+      if (response.status === 200) {
+        const user = response.json;
+        new import_obsidian.Notice(`\u2705 Connected successfully as ${user.email}`);
+      } else {
+        new import_obsidian.Notice(`\u274C Connection failed: ${response.status}`);
+      }
+    } catch (error) {
+      new import_obsidian.Notice(`\u274C Connection failed: ${error.message}`);
+    }
   }
 };
 var FigmaObsidianSyncSettingTab = class extends import_obsidian.PluginSettingTab {
@@ -593,7 +663,6 @@ var FigmaObsidianSyncSettingTab = class extends import_obsidian.PluginSettingTab
   async display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Figma Comments Sync Settings" });
     await this.syncFileNamesWithActualFiles();
     this.addGeneralSettings(containerEl);
     this.addSecuritySection(containerEl);
@@ -601,8 +670,8 @@ var FigmaObsidianSyncSettingTab = class extends import_obsidian.PluginSettingTab
     this.addActionsSection(containerEl);
   }
   addGeneralSettings(containerEl) {
-    containerEl.createEl("h3", { text: "\u2699\uFE0F General Settings" });
-    new import_obsidian.Setting(containerEl).setName("Sync Folder").setDesc('Parent folder for all synced comments. Example: "Figma Comments" \u2192 saves as "Figma Comments/FileName_comments.md"').addText((text) => {
+    new import_obsidian.Setting(containerEl).setName("\u2699\uFE0F General").setHeading();
+    new import_obsidian.Setting(containerEl).setName("Sync folder").setDesc('Parent folder for all synced comments. Example: "Figma Comments" \u2192 saves as "Figma Comments/FileName_comments.md"').addText((text) => {
       const oldPath = this.plugin.settings.syncFolder;
       let currentValue = oldPath;
       text.setPlaceholder("Figma Comments").setValue(this.plugin.settings.syncFolder).onChange((value) => {
@@ -626,13 +695,13 @@ var FigmaObsidianSyncSettingTab = class extends import_obsidian.PluginSettingTab
       });
       return text;
     });
-    new import_obsidian.Setting(containerEl).setName("Auto-sync Interval (minutes)").setDesc("How often to automatically sync comments (0 to disable)").addText((text) => text.setPlaceholder("5").setValue(String(this.plugin.settings.syncInterval / 6e4)).onChange(async (value) => {
+    new import_obsidian.Setting(containerEl).setName("Auto-sync interval (minutes)").setDesc("How often to automatically sync comments (0 to disable)").addText((text) => text.setPlaceholder("5").setValue(String(this.plugin.settings.syncInterval / 6e4)).onChange(async (value) => {
       const minutes = parseInt(value) || 0;
       this.plugin.settings.syncInterval = minutes * 6e4;
       await this.plugin.saveSettings();
       this.plugin.startAutoSync();
     }));
-    new import_obsidian.Setting(containerEl).setName("Fetch Frame Information").setDesc('Retrieve and display which frame/component each comment belongs to (uses additional API calls). Note: Frame information is cached for 24 hours. If Figma frame names are not reflecting after changes, use "Clear Cache" button below or perform manual sync.').addToggle((toggle) => toggle.setValue(this.plugin.settings.fetchFrameInfo || false).onChange(async (value) => {
+    new import_obsidian.Setting(containerEl).setName("Fetch frame information").setDesc('Retrieve and display which frame/component each comment belongs to (uses additional API calls). Note: Frame information is cached for 24 hours. If Figma frame names are not reflecting after changes, use "Clear Cache" button below or perform manual sync.').addToggle((toggle) => toggle.setValue(this.plugin.settings.fetchFrameInfo || false).onChange(async (value) => {
       this.plugin.settings.fetchFrameInfo = value;
       await this.plugin.saveSettings();
       if (value) {
@@ -641,7 +710,7 @@ var FigmaObsidianSyncSettingTab = class extends import_obsidian.PluginSettingTab
         new import_obsidian.Notice("Frame information disabled");
       }
     }));
-    new import_obsidian.Setting(containerEl).setName("Delete old folders to trash").setDesc("When enabled, empty folders are moved to trash instead of being permanently deleted. This follows your Obsidian trash settings and allows for recovery.").addToggle((toggle) => {
+    new import_obsidian.Setting(containerEl).setName("Move empty folders to trash").setDesc("Move empty folders to trash when changing sync locations, following your Obsidian trash settings.").addToggle((toggle) => {
       var _a;
       return toggle.setValue((_a = this.plugin.settings.deleteToTrash) != null ? _a : true).onChange(async (value) => {
         this.plugin.settings.deleteToTrash = value;
@@ -655,48 +724,16 @@ var FigmaObsidianSyncSettingTab = class extends import_obsidian.PluginSettingTab
     });
   }
   addSecuritySection(containerEl) {
-    containerEl.createEl("h3", { text: this.securityTitle });
-    new import_obsidian.Setting(containerEl).setName("Figma Access Token").setDesc("Configure your Figma Personal Access Token securely").addButton((button) => button.setIcon("settings").setTooltip("Open security settings").onClick(() => {
+    new import_obsidian.Setting(containerEl).setName("\u{1F512} Security").setHeading();
+    new import_obsidian.Setting(containerEl).setName("Figma access token").setDesc("Configure your Figma personal access token securely").addButton((button) => button.setIcon("settings").setTooltip("Open security settings").onClick(() => {
       this.openSecurityModal();
     }));
   }
   openSecurityModal() {
-    const modal = new import_obsidian.Modal(this.app);
-    modal.titleEl.textContent = this.securityTitle;
-    const content = modal.contentEl;
-    this.addSecuritySettingsToModal(content, modal);
-    modal.open();
-  }
-  addSecuritySettingsToModal(containerEl, modal) {
-    containerEl.createEl("p", {
-      text: "Your Figma access token is encrypted and stored securely.",
-      cls: "setting-item-description"
-    });
-    const tokenVisible = this.plugin.settings.tokenVisible || false;
-    const tokenValue = this.plugin.settings.figmaToken || "";
-    const displayValue = tokenVisible ? tokenValue : "\u2022".repeat(Math.min(tokenValue.length, 20));
-    new import_obsidian.Setting(containerEl).setName("Figma Personal Access Token").setDesc("Get your token from https://www.figma.com/developers/api#access-tokens").addText((text) => {
-      text.setPlaceholder("Enter your token").setValue(displayValue).onChange(async (value) => {
-        if (tokenVisible || value !== displayValue) {
-          this.plugin.settings.figmaToken = value;
-          await this.plugin.saveSettings();
-        }
-      });
-      if (!tokenVisible) {
-        text.inputEl.type = "password";
-      }
-    });
-    new import_obsidian.Setting(containerEl).addButton((button) => button.setButtonText(tokenVisible ? "Hide" : "Show").onClick(async () => {
-      this.plugin.settings.tokenVisible = !tokenVisible;
-      await this.plugin.saveSettings();
-      modal.close();
-      this.openSecurityModal();
-    })).addButton((button) => button.setButtonText("Test Connection").setCta().onClick(async () => {
-      await this.testConnection();
-    }));
+    new SecurityModal(this.app, this.plugin).open();
   }
   addFileManagementSettings(containerEl) {
-    containerEl.createEl("h3", { text: "\u{1F4C1} File Management" });
+    new import_obsidian.Setting(containerEl).setName("\u{1F4C1} File management").setHeading();
     containerEl.createEl("p", {
       text: "Manage Figma files to sync comments from. Toggle files on/off to control syncing.",
       cls: "setting-item-description"
@@ -725,12 +762,12 @@ var FigmaObsidianSyncSettingTab = class extends import_obsidian.PluginSettingTab
     }));
   }
   addNewFileSection(containerEl) {
-    containerEl.createEl("h4", { text: "\u2795 Add New File" });
+    containerEl.createEl("h4", { text: "\u2795 Add new file" });
     let newFileName = "";
     let newFileKey = "";
-    const setting = new import_obsidian.Setting(containerEl).setName("Add Figma File").setDesc("Enter a friendly name and the file key from Figma URL");
-    setting.addText((text) => text.setPlaceholder("File Name").onChange((value) => newFileName = value));
-    setting.addText((text) => text.setPlaceholder("File Key (e.g., ABC123XYZ)").onChange((value) => newFileKey = value));
+    const setting = new import_obsidian.Setting(containerEl).setName("Add Figma file").setDesc("Enter a friendly name and the file key from Figma URL");
+    setting.addText((text) => text.setPlaceholder("File name").onChange((value) => newFileName = value));
+    setting.addText((text) => text.setPlaceholder("File key (e.g., ABC123XYZ)").onChange((value) => newFileKey = value));
     setting.addButton((button) => button.setButtonText("Add").setCta().onClick(async () => {
       if (newFileName && newFileKey) {
         if (newFileKey.length >= 10) {
@@ -760,63 +797,38 @@ var FigmaObsidianSyncSettingTab = class extends import_obsidian.PluginSettingTab
     }));
   }
   addActionsSection(containerEl) {
-    containerEl.createEl("h3", { text: "\u{1F504} Actions" });
-    if (this.plugin.settings.lastSync) {
+    new import_obsidian.Setting(containerEl).setName("\u{1F504} Actions").setHeading();
+    if (this.plugin.runtimeData.lastSync) {
       containerEl.createEl("p", {
-        text: `Last sync: ${new Date(this.plugin.settings.lastSync).toLocaleString()}`,
+        text: `Last sync: ${new Date(this.plugin.runtimeData.lastSync).toLocaleString()}`,
         cls: "setting-item-description"
       });
     }
-    new import_obsidian.Setting(containerEl).setName("Manual Sync").setDesc("Sync all enabled Figma files now").addButton((button) => button.setButtonText("Sync Now").setCta().onClick(() => {
+    new import_obsidian.Setting(containerEl).setName("Manual sync").setDesc("Sync all enabled Figma files now").addButton((button) => button.setButtonText("Sync now").setCta().onClick(() => {
       this.plugin.syncAllFiles(true);
     }));
     if (this.plugin.settings.fetchFrameInfo) {
-      new import_obsidian.Setting(containerEl).setName("Clear Frame Info Cache").setDesc("Clear cached frame information to fetch the latest data from Figma. Use this if frame names changed in Figma but are not reflecting in synced comments.").addButton((button) => button.setButtonText("Clear Cache").onClick(() => {
-        this.plugin.settings.frameInfoCache = {};
+      new import_obsidian.Setting(containerEl).setName("Clear frame info cache").setDesc("Clear cached frame information to fetch the latest data from Figma. Use this if frame names changed in Figma but are not reflecting in synced comments.").addButton((button) => button.setButtonText("Clear cache").onClick(() => {
+        this.plugin.runtimeData.frameInfoCache = {};
         if (this.plugin.frameInfoFetcher) {
           this.plugin.frameInfoFetcher.clearCache();
         }
-        this.plugin.saveSettings();
         new import_obsidian.Notice("Frame info cache cleared");
       }));
     }
   }
-  async testConnection() {
-    if (!this.plugin.settings.figmaToken) {
-      new import_obsidian.Notice("Please enter a Figma token first");
-      return;
-    }
-    try {
-      const response = await (0, import_obsidian.requestUrl)({
-        url: "https://api.figma.com/v1/me",
-        method: "GET",
-        headers: {
-          "X-Figma-Token": this.plugin.settings.figmaToken
-        }
-      });
-      if (response.status === 200) {
-        const user = response.json;
-        new import_obsidian.Notice(`\u2705 Connected successfully as ${user.email}`);
-      } else {
-        new import_obsidian.Notice(`\u274C Connection failed: ${response.status}`);
-      }
-    } catch (error) {
-      new import_obsidian.Notice(`\u274C Connection failed: ${error.message}`);
-    }
-  }
   editFileDialog(file, index) {
     const modal = new import_obsidian.Modal(this.app);
-    modal.titleEl.textContent = "Edit Figma File";
+    modal.titleEl.textContent = "Edit Figma file";
     const content = modal.contentEl;
     let editName = file.name;
     let editKey = file.key;
-    new import_obsidian.Setting(content).setName("File Name").addText((text) => text.setValue(file.name).onChange((value) => editName = value));
-    new import_obsidian.Setting(content).setName("File Key").addText((text) => text.setValue(file.key).onChange((value) => editKey = value));
+    new import_obsidian.Setting(content).setName("File name").addText((text) => text.setValue(file.name).onChange((value) => editName = value));
+    new import_obsidian.Setting(content).setName("File key").addText((text) => text.setValue(file.key).onChange((value) => editKey = value));
     const buttonContainer = content.createEl("div", { cls: "modal-button-container" });
     const cancelBtn = buttonContainer.createEl("button", { text: "Cancel" });
     cancelBtn.onclick = () => modal.close();
-    const saveBtn = buttonContainer.createEl("button", { text: "Save", cls: "mod-cta" });
-    saveBtn.onclick = async () => {
+    new import_obsidian.ButtonComponent(buttonContainer).setButtonText("Save").setCta().onClick(async () => {
       if (editName && editKey) {
         this.plugin.settings.figmaFiles[index] = {
           ...file,
@@ -827,7 +839,7 @@ var FigmaObsidianSyncSettingTab = class extends import_obsidian.PluginSettingTab
         modal.close();
         this.display();
       }
-    };
+    });
     modal.open();
   }
   // Sync file names in settings with actual file names in vault
