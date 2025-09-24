@@ -1,7 +1,7 @@
 {
   "name": "figma-obsidian-sync",
   "version": "0.1.0",
-  "description": "Sync Figma comments to Obsidian as markdown documents",
+  "description": "Sync Figma comments to Obsidian as Markdown documents",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",

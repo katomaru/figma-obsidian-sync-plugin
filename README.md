@@ -1,6 +1,6 @@
 # Figma Comments Sync for Obsidian
 
-Sync your Figma comments directly into your Obsidian vault as markdown documents. Keep your design discussions and decisions documented alongside your notes.
+Sync your Figma comments directly into your Obsidian vault as Markdown documents. Keep your design discussions and decisions documented alongside your notes.
 
 ## Features
 
