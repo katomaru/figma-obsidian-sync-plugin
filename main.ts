@@ -171,11 +171,12 @@ class FolderMigrationManager {
       
       const buttonContainer = content.createEl('div', { cls: 'modal-button-container' });
       
-      const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
-      cancelBtn.onclick = () => {
-        modal.close();
-        resolve(false);
-      };
+      new ButtonComponent(buttonContainer)
+        .setButtonText('Cancel')
+        .onClick(() => {
+          modal.close();
+          resolve(false);
+        });
       
       new ButtonComponent(buttonContainer)
         .setButtonText('Move files')
@@ -516,14 +517,14 @@ export default class FigmaObsidianSyncPlugin extends Plugin {
     }
 
     // Add ribbon icon
-    this.addRibbonIcon('sync', 'Sync Figma Comments', () => {
+    this.addRibbonIcon('sync', 'Sync Figma comments', () => {
       this.syncAllFiles(true); // Clear cache on manual sync
     });
 
     // Add command
     this.addCommand({
       id: 'sync-figma-comments',
-      name: 'Sync Figma Comments',
+      name: 'Sync Figma comments',
       callback: () => {
         this.syncAllFiles(true); // Clear cache on manual sync
       }
@@ -989,7 +990,7 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
     // Delete to Trash Toggle
     new Setting(containerEl)
       .setName('Move empty folders to trash')
-      .setDesc('Move empty folders to trash when changing sync locations, following your Obsidian trash settings.')
+      .setDesc('Handle empty folders when changing sync locations. When enabled, folders are moved to trash (following your system settings). When disabled, folders may be permanently deleted depending on your Obsidian configuration.')
       .addToggle(toggle => toggle
         .setValue(this.plugin.settings.deleteToTrash ?? true)
         .onChange(async (value) => {
@@ -1196,8 +1197,9 @@ class FigmaObsidianSyncSettingTab extends PluginSettingTab {
     
     const buttonContainer = content.createEl('div', { cls: 'modal-button-container' });
     
-    const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
-    cancelBtn.onclick = () => modal.close();
+    new ButtonComponent(buttonContainer)
+      .setButtonText('Cancel')
+      .onClick(() => modal.close());
     
     new ButtonComponent(buttonContainer)
       .setButtonText('Save')
