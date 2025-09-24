@@ -1,8 +1,8 @@
 # Node modules
 node_modules/
 
-# Build output (keep main.js for distribution)
-# main.js is needed for the plugin to work
+# Build output - generated files should not be committed
+main.js
 
 # Development files
 *.log
@@ -40,4 +40,4 @@ Desktop.ini
 
 # Personal notes or drafts
 drafts/
-personal-notes/main.js
+personal-notes/
